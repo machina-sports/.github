@@ -1,0 +1,19 @@
+# Shared actionlint config for machina-sports repos.
+# https://github.com/rhysd/actionlint
+
+self-hosted-runner:
+  labels: []
+
+config-variables:
+  # GitHub vars/secrets used across reusable workflows
+  - MACHINA_API_KEY
+  - MACHINA_CLIENT_URL
+  - NEXT_PUBLIC_BRAND
+  - NEXT_PUBLIC_APP_NAME
+  - NEXT_PUBLIC_API_BASE_URL
+  - DOCKER_USERNAME
+  - DOCKER_PASSWORD
+  - REGISTRY_URL
+  - AZURE_CREDENTIALS
+  - SLACK_WEBHOOK
+  - SLACK_CHANNEL

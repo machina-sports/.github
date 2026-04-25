@@ -1,0 +1,14 @@
+# Default owners for the org. Each repo can override with its own .github/CODEOWNERS.
+# Syntax: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+* @machina-sports/engineering
+
+# Infra / deploy / CI changes need DevOps review
+.github/         @machina-sports/devops @machina-sports/engineering
+**/k8s/          @machina-sports/devops
+**/Dockerfile*   @machina-sports/devops
+**/helm/         @machina-sports/devops
+
+# Security-sensitive paths
+**/.gitignore    @machina-sports/devops @machina-sports/engineering
+**/.env.example  @machina-sports/devops @machina-sports/engineering

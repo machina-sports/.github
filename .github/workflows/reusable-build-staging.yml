@@ -1,0 +1,126 @@
+name: Reusable — Build & deploy staging
+
+# Triggered in caller on `push: tags: 'v.staging-*'`
+# Builds Docker image, pushes to registry, and deploys to AKS staging.
+
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        description: 'App / image name (e.g. machina-studio)'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile'
+        required: false
+        type: string
+        default: './Dockerfile'
+      build-args:
+        description: 'Newline-separated docker build args. Caller may template vars/secrets here.'
+        required: false
+        type: string
+        default: ''
+      aks-cluster:
+        required: false
+        type: string
+        default: 'mks-community-cluster'
+      aks-resource-group:
+        required: false
+        type: string
+        default: 'mks-community-group'
+      namespace:
+        required: true
+        type: string
+      deployment-name:
+        required: true
+        type: string
+      container-name:
+        required: true
+        type: string
+    secrets:
+      DOCKER_USERNAME:
+        required: true
+      DOCKER_PASSWORD:
+        required: true
+      REGISTRY_URL:
+        required: true
+      AZURE_CREDENTIALS:
+        required: true
+      SLACK_WEBHOOK:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    name: Build & deploy staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve image tag from git tag
+        run: echo "IMAGE_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          push: true
+          build-args: ${{ inputs.build-args }}
+          tags: |
+            ${{ secrets.REGISTRY_URL }}/${{ inputs.app-name }}:${{ env.IMAGE_TAG }}
+            ${{ secrets.REGISTRY_URL }}/${{ inputs.app-name }}:staging-latest
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS credentials
+        uses: azure/aks-set-context@v4
+        with:
+          cluster-name: ${{ inputs.aks-cluster }}
+          resource-group: ${{ inputs.aks-resource-group }}
+
+      - name: Deploy to AKS (kubectl set image)
+        run: |
+          kubectl set image deployment/${{ inputs.deployment-name }} \
+            ${{ inputs.container-name }}=${{ secrets.REGISTRY_URL }}/${{ inputs.app-name }}:${{ env.IMAGE_TAG }} \
+            -n ${{ inputs.namespace }}
+          kubectl rollout status deployment/${{ inputs.deployment-name }} -n ${{ inputs.namespace }} --timeout=5m
+
+      - name: Notify Slack — success
+        if: success() && env.SLACK_WEBHOOK_PRESENT == 'true'
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_USERNAME: GitHub Actions
+          SLACK_COLOR: 'good'
+          SLACK_TITLE: '[staging] ${{ inputs.app-name }} deployed'
+          SLACK_MESSAGE: '${{ inputs.app-name }}:${{ env.IMAGE_TAG }} → ${{ inputs.namespace }}'
+          SLACK_ICON: ':rocket:'
+
+      - name: Notify Slack — failure
+        if: failure() && env.SLACK_WEBHOOK_PRESENT == 'true'
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_USERNAME: GitHub Actions
+          SLACK_COLOR: 'danger'
+          SLACK_TITLE: '[staging] ${{ inputs.app-name }} deploy FAILED'
+          SLACK_MESSAGE: 'Build or deploy of ${{ inputs.app-name }}:${{ env.IMAGE_TAG }} failed.'
+          SLACK_ICON: ':x:'
+
+      - name: Azure cleanup
+        if: always()
+        run: az account clear

@@ -1,0 +1,66 @@
+# --- machina-sports baseline .gitignore ---
+# Managed by machina-sports/.github. Local additions belong below the marker.
+
+# Secrets — NEVER commit these
+.env
+.env.*
+.env_backup
+!.env.example
+!.env.*.example
+ENVIRONMENT.md
+*.pem
+*.key
+certificates/
+
+# Node / package managers
+node_modules/
+.pnp
+.pnp.js
+.npm/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Builds / framework caches
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# Testing / coverage
+coverage/
+.nyc_output/
+
+# Logs
+*-debug.log*
+*-error.log*
+*.log
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Vercel
+.vercel
+
+# Public artifacts that should be regenerated
+public/robots.txt
+public/sitemap.xml
+public/sitemap-0.xml
+
+# Tooling
+.lefthook-local.yml
+tmp/
+
+# --- end of baseline (add repo-specific ignores below) ---

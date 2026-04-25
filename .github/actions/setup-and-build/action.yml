@@ -1,0 +1,47 @@
+name: Setup and Build
+description: Setup Node + package manager, install deps, build the project.
+
+inputs:
+  node-version:
+    required: false
+    default: '20.18.0'
+  package-manager:
+    description: 'npm | pnpm | bun'
+    required: false
+    default: 'npm'
+  pnpm-version:
+    required: false
+    default: '9.14.4'
+  build-script:
+    required: false
+    default: 'build'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      if: inputs.package-manager == 'pnpm'
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+        run_install: false
+
+    - name: Setup Bun
+      if: inputs.package-manager == 'bun'
+      uses: oven-sh/setup-bun@v2
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: ${{ inputs.package-manager == 'pnpm' && 'pnpm' || (inputs.package-manager == 'npm' && 'npm' || '') }}
+
+    - name: Install and build
+      shell: bash
+      run: |
+        case "${{ inputs.package-manager }}" in
+          pnpm) pnpm install --frozen-lockfile && pnpm run ${{ inputs.build-script }} ;;
+          bun)  bun install --frozen-lockfile && bun run ${{ inputs.build-script }} ;;
+          npm)  npm ci && npm run ${{ inputs.build-script }} ;;
+          *)    echo "Unsupported package manager: ${{ inputs.package-manager }}"; exit 1 ;;
+        esac

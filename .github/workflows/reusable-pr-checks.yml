@@ -1,0 +1,174 @@
+name: Reusable — PR checks
+
+# Universal PR gate: lint, typecheck, test, build, secret scan, env-leak guard.
+# Caller passes runtime hints; jobs are skipped if not applicable.
+
+on:
+  workflow_call:
+    inputs:
+      runtime:
+        description: 'node | python | bun'
+        required: true
+        type: string
+      node-version:
+        required: false
+        type: string
+        default: '20.18.0'
+      python-version:
+        required: false
+        type: string
+        default: '3.11'
+      package-manager:
+        description: 'npm | pnpm | bun | pdm | poetry'
+        required: false
+        type: string
+        default: 'npm'
+      lint-cmd:
+        required: false
+        type: string
+        default: ''
+      typecheck-cmd:
+        required: false
+        type: string
+        default: ''
+      test-cmd:
+        required: false
+        type: string
+        default: ''
+      build-cmd:
+        required: false
+        type: string
+        default: ''
+      run-secret-scan:
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  env-guard:
+    name: Block .env in diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if .env (non-example) is in PR diff
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          if [ -z "$base" ] || [ -z "$head" ]; then
+            echo "Not a PR context, skipping."
+            exit 0
+          fi
+          violations=$(git diff --name-only "$base" "$head" \
+            | grep -E '(^|/)\.env(\.[^/]+)?$' \
+            | grep -vE '\.env\.example($|\.)|\.env\.[^/]+\.example$' || true)
+          if [ -n "$violations" ]; then
+            echo "::error::Forbidden .env files in this PR:"
+            echo "$violations" | sed 's/^/::error::  /'
+            echo ""
+            echo "Use .env.example for templates. Real .env values must never be committed."
+            exit 1
+          fi
+          echo "OK — no .env files leaked into diff."
+
+  setup-node:
+    name: Lint / typecheck / test / build (Node)
+    if: inputs.runtime == 'node' || inputs.runtime == 'bun'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        if: inputs.package-manager == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Bun
+        if: inputs.package-manager == 'bun' || inputs.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager == 'pnpm' && 'pnpm' || (inputs.package-manager == 'npm' && 'npm' || '') }}
+
+      - name: Install
+        run: |
+          case "${{ inputs.package-manager }}" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            bun)  bun install --frozen-lockfile ;;
+            npm)  npm ci ;;
+            *)    echo "Unsupported package manager: ${{ inputs.package-manager }}"; exit 1 ;;
+          esac
+
+      - name: Lint
+        if: inputs.lint-cmd != ''
+        run: ${{ inputs.lint-cmd }}
+
+      - name: Typecheck
+        if: inputs.typecheck-cmd != ''
+        run: ${{ inputs.typecheck-cmd }}
+
+      - name: Test
+        if: inputs.test-cmd != ''
+        run: ${{ inputs.test-cmd }}
+
+      - name: Build
+        if: inputs.build-cmd != ''
+        run: ${{ inputs.build-cmd }}
+
+  setup-python:
+    name: Lint / typecheck / test (Python)
+    if: inputs.runtime == 'python'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install PDM
+        if: inputs.package-manager == 'pdm'
+        run: pip install pdm
+
+      - name: Install Poetry
+        if: inputs.package-manager == 'poetry'
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: |
+          case "${{ inputs.package-manager }}" in
+            pdm)    pdm install --no-self ;;
+            poetry) poetry install --no-root ;;
+            *)      pip install -r requirements.txt ;;
+          esac
+
+      - name: Lint
+        if: inputs.lint-cmd != ''
+        run: ${{ inputs.lint-cmd }}
+
+      - name: Typecheck
+        if: inputs.typecheck-cmd != ''
+        run: ${{ inputs.typecheck-cmd }}
+
+      - name: Test
+        if: inputs.test-cmd != ''
+        run: ${{ inputs.test-cmd }}
+
+  secret-scan:
+    name: Secret scan
+    if: inputs.run-secret-scan
+    uses: machina-sports/.github/.github/workflows/reusable-secret-scan.yml@main
+    permissions:
+      contents: read
+      pull-requests: read

@@ -1,0 +1,23 @@
+# Shared gitleaks config for machina-sports repos.
+# Default ruleset + Machina-specific allowlists.
+# https://github.com/gitleaks/gitleaks
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist (test fixtures, examples, public docs)"
+paths = [
+  '''(^|/)\.env\.example$''',
+  '''(^|/)\.env\.[^/]+\.example$''',
+  '''(^|/)docs/.*''',
+  '''(^|/)README\.md$''',
+  '''(^|/)CHANGELOG\.md$''',
+  '''(^|/)tests?/fixtures/.*''',
+  '''(^|/)__fixtures__/.*''',
+]
+
+regexes = [
+  # Common placeholder values used in examples
+  '''(?i)(your[-_]?api[-_]?key|xxxx+|placeholder|example|dummy)''',
+]
