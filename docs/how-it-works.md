@@ -4,13 +4,14 @@ This document explains the architecture, mechanics, and trade-offs of the `machi
 
 ## TL;DR
 
-`machina-sports/.github` is a **public** repository at the org level that holds three categories of shared automation:
+`machina-sports/.github` is a **public** repository at the org level that holds four categories of shared automation:
 
 1. **GitHub-native propagation** — Files like `PULL_REQUEST_TEMPLATE.md` and `CODEOWNERS` are inherited automatically by every repo in the `machina-sports` org that doesn't define its own.
 2. **Reusable workflows** — Generic CI/CD primitives (PR checks, deploys to AKS, secret scans) that any repo invokes via `uses: machina-sports/.github/.github/workflows/<name>.yml@v1`.
 3. **Copyable config templates** — Files like `.gitignore.base`, `lefthook.yml`, `commitlint.config.mjs`, `gitleaks.toml`, `prettier.config.mjs`, `eslint.config.mjs`, `tsconfig.base.json` that the `apply-baseline.sh` script installs into each consumer repo.
+4. **Claude Code skills (plugin `machina`)** — Slash-commands like `/machina:setup-branch-protection` that automate org-level operations.
 
-Each repo opts in by running `apply-baseline.sh` once, then references reusable workflows from its own `.github/workflows/*.yml` files.
+Each repo opts in by running `apply-baseline.sh` once, then references reusable workflows from its own `.github/workflows/*.yml` files. Branch protection is then applied org-wide via the `setup-branch-protection` skill.
 
 ---
 
@@ -29,6 +30,12 @@ machina-sports/.github
 │   │   └── reusable-deploy-aks.yml        ← kubectl set image to AKS, optional gating
 │   └── actions/
 │       └── setup-and-build/               ← composite action used by callers' inline builds
+├── .claude-plugin/
+│   └── plugin.json                        ← Claude Code plugin metadata (namespace: machina)
+├── .claude/
+│   └── skills/
+│       └── setup-branch-protection/
+│           └── skill.md                   ← /machina:setup-branch-protection runbook
 ├── configs/                               ← templates copied into consumer repos
 │   ├── .gitignore.base                    ← strict secret/build/IDE ignores
 │   ├── lefthook.yml                       ← git hooks (pre-commit env-guard, commit-msg)
@@ -240,6 +247,55 @@ These are by-design-public — they ship to the JS bundle that runs in users' br
 
 ---
 
+## Claude Code skills (plugin `machina`)
+
+The custodian also exports a Claude Code plugin at `.claude-plugin/plugin.json` with org-level skills. Skills are markdown runbooks Claude Code follows when the user invokes them via slash command.
+
+### `/machina:setup-branch-protection`
+
+Configures branch protection on a repo via `gh api`, replacing the manual `Settings → Branches` UI workflow. Per repo it:
+
+1. Detects the default branch (`main` / `master`) and whether `staging` exists.
+2. Reads the repo's `.github/workflows/pr.yml` to detect the runtime (`node` vs `python`).
+3. Builds the `required_status_checks.contexts` array to match what the repo's `pr.yml` actually emits — only the runtime-specific check, plus the three universal ones (`semantic-pr / Validate PR title`, `checks / Block .env in diff`, `checks / Secret scan (gitleaks)`).
+4. Applies the rule via `PUT /repos/<owner>/<repo>/branches/<branch>/protection`.
+5. Verifies via a read-back.
+
+Standard rule shape applied:
+
+```jsonc
+{
+  "required_status_checks": { "strict": true, "contexts": [...] },
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false
+  },
+  "enforce_admins": false,                    // never lock admins out
+  "restrictions": null,                        // no push allowlist
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": true
+}
+```
+
+### Guardrails the skill enforces
+
+- **Never** sets `enforce_admins: true` (admin lockout risk).
+- **Never** includes the legacy `notify` (Slack-only) check from `pull.yml` — it always passes vacuously and would defeat enforcement.
+- **Never** sets `restrictions` (push allowlist) without explicit user confirmation.
+- Verifies exact context-name strings against actual past runs (`gh api /repos/.../check-runs`) to avoid blocking all merges due to typos.
+
+### Recovery
+
+If a rule misconfigures and blocks merges, the skill documents the rollback:
+
+```bash
+gh api --method DELETE "/repos/<owner>/<repo>/branches/<branch>/protection"
+```
+
+---
+
 ## Adoption flow for a new repo
 
 1. **Apply the baseline** (one-time):
@@ -309,6 +365,7 @@ These are by-design-public — they ship to the JS bundle that runs in users' br
 | `gitleaks` binary, not the action | The official `gitleaks-action@v2` requires a paid license for org use since 2024. The binary is unrestricted. |
 | Lefthook, not husky | Husky 9+ requires Node setup before hooks run (slow). Lefthook is a single Go binary, faster, and language-agnostic. |
 | `v1` tag force-moves | Industry-standard pattern (`actions/checkout@v4`, etc.). Callers get bug fixes automatically; breaking changes require a new major. |
+| Branch protection via skill, not Terraform | Setting up Terraform for ~5 rules across ~10 repos costs more than it saves. The skill is idempotent, runnable on any repo in seconds, and version-controlled in the same custodian. |
 
 ### Pitfalls we hit (and resolved)
 
@@ -317,6 +374,85 @@ These are by-design-public — they ship to the JS bundle that runs in users' br
 - **`gitleaks` `regexTarget` default** — Allowlist regexes match the *full match line* by default, not the secret. Set `regexTarget = "secret"` to match against just the secret value.
 - **`package-lock.json` out of sync** — Adding devdeps to `package.json` without running `npm install` locally breaks `npm ci` in CI. Always regenerate the lockfile alongside dep changes.
 - **GitHub API rate limits** — Force-moving tags + many `gh` calls in a tight loop hits the 5000/hr core limit. Use `ScheduleWakeup` to cool off rather than retrying.
+
+---
+
+## Pilot rollout status
+
+The first wave covers four representative repos chosen for breadth (frontend + BFF + Python APIs + multi-tenant frontend with no prior CI):
+
+| Repo | Runtime | Baseline | Deploy migration | Branch protection |
+|---|---|---|---|---|
+| `machina-studio` | Node (Next.js / npm) | ✅ #229 | ✅ #230 | ✅ `main`, `staging` |
+| `sportingbot-web` | Node (Next.js / npm) | ✅ #99 (combined) | ✅ #99 (4 envs: dev/stg/prd/prod) | ✅ `main` |
+| `machina-client-api` | Python (Flask / pdm) | ✅ #207 | ⏳ pending | ✅ `master`, `staging` |
+| `machina-core-api` | Python (Flask / pdm) | ✅ #155 | ⏳ pending | ✅ `master` |
+
+Notable wins surfaced during the pilot:
+
+- `machina-studio`'s `.eslintrc.json` had an **invalid trailing comma** that went unnoticed because `next lint` never ran in CI before this work.
+- `sportingbot-web` had **zero PR-time CI** and a leftover `.env.local.staging` file in the working tree — exactly the class of risk the env-guard now catches.
+- `gitleaks` raised real signal (PostHog public keys hardcoded in workflows) and led to a vetted public-key allowlist that benefits the whole org.
+
+## Pending migrations (Python APIs)
+
+Both Python repos have their PR enforcement layer in place. Their **deploy workflows** still need migration to the build-inline + `reusable-deploy-aks.yml` pattern.
+
+### `machina-client-api` — 9 workflows to migrate
+
+```
+build-cockpit.yml             ← cockpit / admin variant
+build-mcp-staging.yml         ← MCP server, staging
+build-mcp-release-beta.yml    ← MCP server, beta
+build-staging.yml             ← main API, staging
+release-beta.yml              ← beta promotion
+release-mcp-beta.yml          ← MCP beta promotion
+release-prod.yml              ← production deploy (gated)
+release-tag.yml               ← tag-driven generic release
+pull.yml                      ← legacy Slack notify (will be removed)
+```
+
+Migration pattern, each workflow:
+
+1. Keep its existing trigger (tag-push or `workflow_dispatch`).
+2. Split into a `build-and-push` job (inline `docker/login-action` + `docker/build-push-action`, with all the per-env build args staying in scope of caller secrets).
+3. Add a `deploy` job that calls `reusable-deploy-aks.yml@v1` with the matching cluster / namespace / deployment / container.
+4. For production-bound workflows, set `environment: production` so the deploy waits on the GitHub Environment's required reviewer.
+
+### `machina-core-api` — 7 workflows to migrate
+
+```
+build-mcp-staging.yml             ← MCP server, staging
+build-mcp-release-production.yml  ← MCP server, production (gated)
+release-staging.yml               ← main API, staging
+release-production.yml            ← main API, production (gated)
+unit-tests-pr.yml                 ← stays as-is (already runs pytest on PR)
+test-pr.yml                       ← review for overlap with unit-tests-pr
+unit-test-mcp.yml                 ← MCP unit tests
+pull.yml                          ← legacy Slack notify (will be removed)
+```
+
+Same pattern as client-api. Notable: `unit-tests-pr.yml` is left intact — it runs pytest on Python paths and is complementary to the `pdm install` validation that `pr.yml` does.
+
+### Why the deploy migration is split from the baseline PR
+
+Mixing PR enforcement (low-risk, no behavior change to deploys) with deploy refactors (risk: breaking real production tags) would have made review impossible and merge slow. Separating them means:
+
+- Baseline PR is small, fast to review, and zero risk to existing deploys.
+- Deploy PR is larger but each workflow is independently verifiable (push a `v.staging-test.<n>` tag, check AKS rollout, repeat).
+- If something breaks after the deploy PR, the rollback is `git revert` of one PR, not a multi-purpose merge.
+
+### Risk and verification plan for the deploy migration
+
+For each workflow being migrated:
+
+1. **Diff isolation** — Each workflow change is one commit. The PR diff lists exactly the trigger + build-args being preserved.
+2. **Smoke test in staging** — Push a throw-away tag (e.g. `v.staging-baseline-test.1`), confirm the build completes and the deploy reaches AKS. The new pattern is identical to the studio migration that has been running in production since the previous PR.
+3. **Production gate verification** — For prod workflows, the `production` Environment must be configured in the repo's `Settings → Environments` with required reviewers BEFORE merge. Without that, `environment: production` auto-approves and the gate is meaningless.
+4. **Slack continuity** — All deploy workflows currently post to Slack; the reusable preserves this with `continue-on-error: true` so a missing `SLACK_WEBHOOK` doesn't break deploys.
+5. **Rollback path** — `kubectl set image` is reversible: re-run the workflow with the previous good `image_tag` via the manual `workflow_dispatch` redeploy path.
+
+Both Python repos retain their existing `pull.yml` (Slack-only notify on PR open) until branch protection is verified to require only the new checks. Once stable, `pull.yml` is removed in a third small PR.
 
 ---
 
