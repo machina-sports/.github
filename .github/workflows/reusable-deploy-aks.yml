@@ -63,13 +63,16 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
-      - name: Resolve image tag
+      - name: Resolve image tag and env label
         run: |
           if [ -n "${{ inputs.image-tag }}" ]; then
             echo "IMAGE_TAG=${{ inputs.image-tag }}" >> "$GITHUB_ENV"
           else
             echo "IMAGE_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
           fi
+          ENV_LABEL="${{ inputs.environment }}"
+          [ -z "$ENV_LABEL" ] && ENV_LABEL="staging"
+          echo "ENV_LABEL=$ENV_LABEL" >> "$GITHUB_ENV"
 
       - name: Login to Azure
         uses: azure/login@v2
@@ -99,8 +102,8 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_USERNAME: GitHub Actions
           SLACK_COLOR: 'good'
-          SLACK_TITLE: '[${{ inputs.environment != '' && inputs.environment || 'staging' }}] ${{ inputs.app-name }} deployed'
-          SLACK_MESSAGE: '${{ inputs.app-name }}:${{ env.IMAGE_TAG }} → ${{ inputs.namespace }}'
+          SLACK_TITLE: "[${{ env.ENV_LABEL }}] ${{ inputs.app-name }} deployed"
+          SLACK_MESSAGE: "${{ inputs.app-name }}:${{ env.IMAGE_TAG }} → ${{ inputs.namespace }}"
           SLACK_ICON: ':rocket:'
 
       - name: Notify Slack — failure
@@ -111,8 +114,8 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_USERNAME: GitHub Actions
           SLACK_COLOR: 'danger'
-          SLACK_TITLE: '[${{ inputs.environment != '' && inputs.environment || 'staging' }}] ${{ inputs.app-name }} deploy FAILED'
-          SLACK_MESSAGE: 'Deploy of ${{ inputs.app-name }}:${{ env.IMAGE_TAG }} to ${{ inputs.namespace }} failed.'
+          SLACK_TITLE: "[${{ env.ENV_LABEL }}] ${{ inputs.app-name }} deploy FAILED"
+          SLACK_MESSAGE: "Deploy of ${{ inputs.app-name }}:${{ env.IMAGE_TAG }} to ${{ inputs.namespace }} failed."
           SLACK_ICON: ':x:'
 
       - name: Azure cleanup
