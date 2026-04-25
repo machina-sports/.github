@@ -73,6 +73,8 @@ jobs:
 
 ### `.github/workflows/build-staging.yml`
 
+Build is inline (because secrets aren't allowed in reusable `with:` blocks). The reusable handles the deploy.
+
 ```yaml
 name: Build & deploy staging
 
@@ -81,19 +83,39 @@ on:
     tags: ['v.staging-*']
 
 jobs:
-  build:
-    uses: machina-sports/.github/.github/workflows/reusable-build-staging.yml@v1
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.set-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.build-staging
+          push: true
+          build-args: |
+            NEXT_PUBLIC_FOO=${{ vars.NEXT_PUBLIC_FOO }}
+            NEXT_PUBLIC_API_KEY=${{ secrets.NEXT_PUBLIC_API_KEY }}
+          tags: |
+            ${{ secrets.REGISTRY_URL }}/my-app:${{ steps.set-tag.outputs.tag }}
+
+  deploy:
+    needs: build-and-push
+    uses: machina-sports/.github/.github/workflows/reusable-deploy-aks.yml@v1
     with:
-      app-name: machina-studio
-      dockerfile: ./Dockerfile.build-staging
-      namespace: machina-workspace
-      deployment-name: machina-workspace-client-services-staging
-      container-name: machina-workspace-studio-staging
-      build-args: |
-        NEXT_PUBLIC_FOO=${{ vars.NEXT_PUBLIC_FOO }}
+      app-name: my-app
+      image-tag: ${{ needs.build-and-push.outputs.image-tag }}
+      namespace: my-namespace
+      deployment-name: my-deployment-staging
+      container-name: my-container-staging
     secrets:
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
       REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
       AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -101,26 +123,44 @@ jobs:
 
 ### `.github/workflows/release-production.yml`
 
+Same shape, plus `environment: production` for manual approval gating.
+
 ```yaml
 name: Release production
 
 on:
   push:
-    tags: ['v.production-*']
+    tags: ['v.production-*']  # or v.release-*.* — your repo's convention
 
 jobs:
-  release:
-    uses: machina-sports/.github/.github/workflows/reusable-release-production.yml@v1
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.set-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      # ...build+push (same pattern as staging, with prod build-args)
+
+  deploy:
+    needs: build-and-push
+    uses: machina-sports/.github/.github/workflows/reusable-deploy-aks.yml@v1
     with:
-      app-name: machina-studio
-      namespace: machina-workspace
-      deployment-name: machina-workspace-client-services-production
-      container-name: machina-workspace-studio-production
+      app-name: my-app
+      image-tag: ${{ needs.build-and-push.outputs.image-tag }}
+      environment: production       # ← gates the deploy on manual approval
+      namespace: my-namespace
+      deployment-name: my-deployment
+      container-name: my-container
+      rollout-timeout: 10m
     secrets:
       REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
       AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
 ```
+
+> **One-time setup**: in the repo, go to Settings → Environments → New → `production` → Required reviewers → add your team. Without this, `environment: production` auto-approves.
 
 ## Step 4 — Configure branch protection (manual, GitHub UI)
 

@@ -1,7 +1,12 @@
-name: Reusable — Build & deploy staging
+name: Reusable — Deploy to AKS
 
-# Triggered in caller on `push: tags: 'v.staging-*'`
-# Builds Docker image, pushes to registry, and deploys to AKS staging.
+# Generic kubectl set image deployment to AKS. Build-and-push happens
+# in the caller workflow (because secrets are not in scope inside `with:`
+# blocks for workflow_call inputs — see GitHub Actions docs).
+#
+# Usage:
+#   - Set `environment: production` to require manual approval gate.
+#   - image-tag must be set explicitly OR resolved from GITHUB_REF (tag-push trigger).
 
 on:
   workflow_call:
@@ -11,17 +16,12 @@ on:
         required: true
         type: string
       image-tag:
-        description: 'Image tag. If empty, extracted from GITHUB_REF (works for tag-push triggers).'
+        description: 'Image tag. If empty, extracted from GITHUB_REF.'
         required: false
         type: string
         default: ''
-      dockerfile:
-        description: 'Path to Dockerfile'
-        required: false
-        type: string
-        default: './Dockerfile'
-      build-args:
-        description: 'Newline-separated docker build args. Caller may template vars/secrets here.'
+      environment:
+        description: 'GitHub Environment to bind the deploy to (e.g. production for gated deploys). Empty = no gate.'
         required: false
         type: string
         default: ''
@@ -42,11 +42,11 @@ on:
       container-name:
         required: true
         type: string
+      rollout-timeout:
+        required: false
+        type: string
+        default: '5m'
     secrets:
-      DOCKER_USERNAME:
-        required: true
-      DOCKER_PASSWORD:
-        required: true
       REGISTRY_URL:
         required: true
       AZURE_CREDENTIALS:
@@ -58,14 +58,11 @@ permissions:
   contents: read
 
 jobs:
-  build-and-deploy:
-    name: Build & deploy staging
+  deploy:
+    name: Deploy ${{ inputs.app-name }}${{ inputs.environment != '' && format(' to {0}', inputs.environment) || '' }}
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Resolve image tag
         run: |
           if [ -n "${{ inputs.image-tag }}" ]; then
@@ -73,23 +70,6 @@ jobs:
           else
             echo "IMAGE_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
           fi
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ inputs.dockerfile }}
-          push: true
-          build-args: ${{ inputs.build-args }}
-          tags: |
-            ${{ secrets.REGISTRY_URL }}/${{ inputs.app-name }}:${{ env.IMAGE_TAG }}
-            ${{ secrets.REGISTRY_URL }}/${{ inputs.app-name }}:staging-latest
 
       - name: Login to Azure
         uses: azure/login@v2
@@ -102,12 +82,14 @@ jobs:
           cluster-name: ${{ inputs.aks-cluster }}
           resource-group: ${{ inputs.aks-resource-group }}
 
-      - name: Deploy to AKS (kubectl set image)
+      - name: Deploy to AKS
         run: |
           kubectl set image deployment/${{ inputs.deployment-name }} \
             ${{ inputs.container-name }}=${{ secrets.REGISTRY_URL }}/${{ inputs.app-name }}:${{ env.IMAGE_TAG }} \
             -n ${{ inputs.namespace }}
-          kubectl rollout status deployment/${{ inputs.deployment-name }} -n ${{ inputs.namespace }} --timeout=5m
+          kubectl rollout status deployment/${{ inputs.deployment-name }} \
+            -n ${{ inputs.namespace }} \
+            --timeout=${{ inputs.rollout-timeout }}
 
       - name: Notify Slack — success
         if: success()
@@ -117,7 +99,7 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_USERNAME: GitHub Actions
           SLACK_COLOR: 'good'
-          SLACK_TITLE: '[staging] ${{ inputs.app-name }} deployed'
+          SLACK_TITLE: '[${{ inputs.environment != '' && inputs.environment || 'staging' }}] ${{ inputs.app-name }} deployed'
           SLACK_MESSAGE: '${{ inputs.app-name }}:${{ env.IMAGE_TAG }} → ${{ inputs.namespace }}'
           SLACK_ICON: ':rocket:'
 
@@ -129,8 +111,8 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_USERNAME: GitHub Actions
           SLACK_COLOR: 'danger'
-          SLACK_TITLE: '[staging] ${{ inputs.app-name }} deploy FAILED'
-          SLACK_MESSAGE: 'Build or deploy of ${{ inputs.app-name }}:${{ env.IMAGE_TAG }} failed.'
+          SLACK_TITLE: '[${{ inputs.environment != '' && inputs.environment || 'staging' }}] ${{ inputs.app-name }} deploy FAILED'
+          SLACK_MESSAGE: 'Deploy of ${{ inputs.app-name }}:${{ env.IMAGE_TAG }} to ${{ inputs.namespace }} failed.'
           SLACK_ICON: ':x:'
 
       - name: Azure cleanup

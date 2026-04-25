@@ -23,10 +23,11 @@ Each repo's `.github/workflows/*.yml` calls one of:
 | Workflow | Purpose | Trigger in caller |
 |---|---|---|
 | `reusable-pr-checks.yml` | Lint, typecheck, test, build, secret scan | `pull_request` |
-| `reusable-semantic-pr.yml` | PR title must match `feat:`, `fix:`, etc | `pull_request_target` |
-| `reusable-build-staging.yml` | Docker build + push on `v.staging-*` tag | `push: tags: 'v.staging-*'` |
-| `reusable-release-staging.yml` | `kubectl set image` on AKS | `workflow_call` after build |
-| `reusable-release-production.yml` | Gated production deploy on `v.production-*` | `push: tags: 'v.production-*'` |
+| `reusable-semantic-pr.yml` | PR title must match `feat:`, `fix:`, etc | `pull_request` |
+| `reusable-secret-scan.yml` | gitleaks scan (also embedded in pr-checks) | `pull_request` |
+| `reusable-deploy-aks.yml` | `kubectl set image` to AKS, optional gating via `environment` input | After per-app build, or as standalone redeploy |
+
+> **Why no `reusable-build-*.yml`?** GitHub Actions does not allow `secrets.*` references inside `with:` blocks of workflow_call inputs. Studio (and most apps) need secrets in their docker `build-args`. Each app handles its own build (with its own `vars` / `secrets`) inline, then calls `reusable-deploy-aks.yml` to deploy. See [docs/deploy-flow.md](docs/deploy-flow.md).
 
 See [docs/deploy-flow.md](docs/deploy-flow.md) for the canonical `dev → stg → prd` lifecycle.
 
@@ -36,7 +37,7 @@ See [docs/deploy-flow.md](docs/deploy-flow.md) for the canonical `dev → stg �
 .github/
 ├── PULL_REQUEST_TEMPLATE.md     ← propagated to every repo
 ├── CODEOWNERS                   ← default org-level owners
-├── workflows/                   ← reusable workflows (workflow_call)
+├── workflows/                   ← 4 reusable workflows (workflow_call)
 └── actions/setup-and-build/     ← composite action used by builds
 configs/                         ← templates copied into each repo
 docs/
