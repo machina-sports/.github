@@ -17,18 +17,20 @@ paths = [
   '''(^|/)__fixtures__/.*''',
 ]
 
+# Match against the secret value itself, not the surrounding context.
+regexTarget = "secret"
 regexes = [
   # Common placeholder values used in examples
   '''(?i)(your[-_]?api[-_]?key|xxxx+|placeholder|example|dummy)''',
 
   # PostHog "public" project keys — embedded in the JS bundle by design
   # (NEXT_PUBLIC_POSTHOG_KEY ships to browsers). Not a secret.
-  '''phc_[A-Za-z0-9]{40,}''',
+  '''^phc_[A-Za-z0-9]{40,}$''',
 
   # Google Analytics measurement IDs — public by definition
-  '''G-[A-Z0-9]{6,}''',
-  '''UA-[0-9]+-[0-9]+''',
+  '''^G-[A-Z0-9]{6,}$''',
+  '''^UA-[0-9]+-[0-9]+$''',
 
   # Stripe publishable keys (pk_live_*, pk_test_*) — meant to be public
-  '''pk_(live|test)_[A-Za-z0-9]+''',
+  '''^pk_(live|test)_[A-Za-z0-9]+$''',
 ]
