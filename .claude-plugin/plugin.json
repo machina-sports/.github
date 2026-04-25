@@ -1,0 +1,15 @@
+{
+  "name": "machina",
+  "description": "Machina Sports org-level skills (apply baseline, branch protection, deploys)",
+  "version": "1.0.0",
+  "author": {
+    "name": "Machina Sports"
+  },
+  "keywords": [
+    "machina",
+    "github-actions",
+    "branch-protection",
+    "ci",
+    "automation"
+  ]
+}

@@ -44,6 +44,16 @@ docs/
 scripts/apply-baseline.sh
 ```
 
+## Skills
+
+This repo also exports a Claude Code plugin (`machina`) with org-level skills:
+
+| Skill | Purpose |
+|---|---|
+| `/machina:setup-branch-protection` | Configure branch protection on a repo via `gh api` — required PR reviews, required status checks, force-push restrictions. See [skill.md](.claude/skills/setup-branch-protection/skill.md). |
+
+To use, clone this repo locally and add the plugin path to your Claude Code config (or symlink `.claude-plugin/` into `~/.claude/skills/machina/`).
+
 ## Phases
 
 - **Phase 1** (current): pilot in `machina-studio`. Configs distributed as **copyable templates** via `apply-baseline.sh`.

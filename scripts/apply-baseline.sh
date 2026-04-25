@@ -24,7 +24,7 @@ for arg in "$@"; do
   esac
 done
 
-if [ ! -d .git ]; then
+if [ ! -e .git ]; then
   echo "❌ Not a git repository (run from repo root)." >&2
   exit 1
 fi
