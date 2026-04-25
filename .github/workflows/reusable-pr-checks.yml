@@ -166,9 +166,26 @@ jobs:
         run: ${{ inputs.test-cmd }}
 
   secret-scan:
-    name: Secret scan
+    name: Secret scan (gitleaks)
     if: inputs.run-secret-scan
-    uses: machina-sports/.github/.github/workflows/reusable-secret-scan.yml@main
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch shared gitleaks config (if absent)
+        run: |
+          if [ ! -f .gitleaks.toml ]; then
+            curl -sSL -o .gitleaks.toml \
+              https://raw.githubusercontent.com/machina-sports/.github/main/configs/gitleaks.toml
+          fi
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
