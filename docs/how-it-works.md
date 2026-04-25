@@ -398,26 +398,17 @@ Notable wins surfaced during the pilot:
 
 Both Python repos have their PR enforcement layer in place. Their **deploy workflows** still need migration to the build-inline + `reusable-deploy-aks.yml` pattern.
 
-### `machina-client-api` — 9 workflows to migrate
+### `machina-client-api` — build-only repo (no migration applied)
 
-```
-build-cockpit.yml             ← cockpit / admin variant
-build-mcp-staging.yml         ← MCP server, staging
-build-mcp-release-beta.yml    ← MCP server, beta
-build-staging.yml             ← main API, staging
-release-beta.yml              ← beta promotion
-release-mcp-beta.yml          ← MCP beta promotion
-release-prod.yml              ← production deploy (gated)
-release-tag.yml               ← tag-driven generic release
-pull.yml                      ← legacy Slack notify (will be removed)
-```
+Investigation revealed that all 8 deploy-named workflows in client-api are actually **build-only**: they build Docker images and push them to the registry, but **none of them call `kubectl set image`**. AKS deploys for `machina-client-api` happen outside CI — manually via `kubectl` or through ad-hoc skills.
 
-Migration pattern, each workflow:
+Because `reusable-deploy-aks.yml` has nothing to replace in build-only workflows, the migration was deliberately skipped. The existing workflows continue to work; if the team later decides to automate the deploy step, that becomes a separate architectural decision (with its own PR adding a `deploy` job per workflow, just like core-api now does).
 
-1. Keep its existing trigger (tag-push or `workflow_dispatch`).
-2. Split into a `build-and-push` job (inline `docker/login-action` + `docker/build-push-action`, with all the per-env build args staying in scope of caller secrets).
-3. Add a `deploy` job that calls `reusable-deploy-aks.yml@v1` with the matching cluster / namespace / deployment / container.
-4. For production-bound workflows, set `environment: production` so the deploy waits on the GitHub Environment's required reviewer.
+What remains for client-api in this iteration:
+- Baseline configs ✅ (#207)
+- Branch protection ✅
+- Deploy migration: **N/A** (build-only)
+- Future: optionally modernize action versions (`actions/checkout@v2` → `v4`, etc.) to clear Node 20 deprecation warnings — low risk, separate PR.
 
 ### `machina-core-api` — 7 workflows to migrate
 
