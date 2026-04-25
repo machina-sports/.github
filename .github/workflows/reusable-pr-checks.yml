@@ -184,8 +184,19 @@ jobs:
               https://raw.githubusercontent.com/machina-sports/.github/main/configs/gitleaks.toml
           fi
 
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION="8.21.2"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Run gitleaks (PR diff scan)
+        run: |
+          gitleaks detect \
+            --config .gitleaks.toml \
+            --source . \
+            --log-opts "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --redact \
+            --verbose \
+            --no-banner
