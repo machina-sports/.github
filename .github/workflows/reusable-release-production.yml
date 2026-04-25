@@ -10,6 +10,11 @@ on:
       app-name:
         required: true
         type: string
+      image-tag:
+        description: 'Image tag to deploy. If empty, extracted from GITHUB_REF (works for tag-push triggers).'
+        required: false
+        type: string
+        default: ''
       dockerfile:
         description: 'Optional Dockerfile if production needs a separate build (otherwise reuses staging image)'
         required: false
@@ -61,8 +66,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve image tag from git tag
-        run: echo "IMAGE_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+      - name: Resolve image tag
+        run: |
+          if [ -n "${{ inputs.image-tag }}" ]; then
+            echo "IMAGE_TAG=${{ inputs.image-tag }}" >> "$GITHUB_ENV"
+          else
+            echo "IMAGE_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+          fi
 
       - name: Login to Docker Hub
         if: inputs.dockerfile != ''
@@ -103,6 +113,7 @@ jobs:
 
       - name: Notify Slack — production deployed
         if: success()
+        continue-on-error: true
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -111,6 +122,18 @@ jobs:
           SLACK_TITLE: '[PROD] ${{ inputs.app-name }} deployed'
           SLACK_MESSAGE: '${{ inputs.app-name }}:${{ env.IMAGE_TAG }} → ${{ inputs.namespace }}'
           SLACK_ICON: ':rocket:'
+
+      - name: Notify Slack — production deploy failed
+        if: failure()
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_USERNAME: GitHub Actions
+          SLACK_COLOR: 'danger'
+          SLACK_TITLE: '[PROD] ${{ inputs.app-name }} deploy FAILED'
+          SLACK_MESSAGE: 'Build or deploy of ${{ inputs.app-name }}:${{ env.IMAGE_TAG }} failed.'
+          SLACK_ICON: ':x:'
 
       - name: Azure cleanup
         if: always()
