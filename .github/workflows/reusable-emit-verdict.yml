@@ -1,0 +1,151 @@
+name: Reusable — Emit Verdict to Truth Point
+
+# Records a verdict for a component into the Truth Point service. Any caller
+# workflow (Factory post-run, deploy verifier, post-merge hook) can use this
+# to keep Truth Point aligned with what actually happens to a component in
+# real runs.
+#
+# Verdict shape mirrors the truth-point-feedback workflow input:
+#   { component_id, verdict, summary, actor, artifacts, recorded_at }
+#
+# Usage example:
+#
+#   verdict:
+#     uses: machina-sports/.github/.github/workflows/reusable-emit-verdict.yml@v1
+#     with:
+#       component-id: connector:vertex-embedding
+#       verdict: success
+#       summary: "Smoke ingest produced a 768-dim embedding"
+#       actor: factory
+#     secrets:
+#       TRUTH_POINT_FEEDBACK_URL: ${{ secrets.TRUTH_POINT_FEEDBACK_URL }}
+#       TRUTH_POINT_API_TOKEN:    ${{ secrets.TRUTH_POINT_API_TOKEN }}
+#
+# Failure semantics:
+#   The job fails loudly on validation errors, network failures, or non-2xx
+#   responses from Truth Point. If you want feedback emission to be advisory
+#   (not gate the parent workflow), use `continue-on-error: true` on your
+#   caller job — that's the standard GitHub Actions pattern.
+
+on:
+  workflow_call:
+    inputs:
+      component-id:
+        description: 'Stable component identifier — "<kind>:<name>" (e.g. connector:vertex-embedding)'
+        required: true
+        type: string
+      verdict:
+        description: 'success | partial | fail'
+        required: true
+        type: string
+      summary:
+        description: 'One-line human reason'
+        required: true
+        type: string
+      actor:
+        description: 'Who/what produced the verdict (factory, ci, human, ...). Defaults to the caller workflow name.'
+        required: false
+        type: string
+        default: ''
+      artifacts-json:
+        description: 'JSON string with arbitrary artifacts. Defaults to a small stub built from the caller run.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      TRUTH_POINT_FEEDBACK_URL:
+        required: true
+      TRUTH_POINT_API_TOKEN:
+        required: true
+    outputs:
+      workflow-run-id:
+        description: 'workflow_run_id returned by truth-point-feedback'
+        value: ${{ jobs.emit.outputs.workflow-run-id }}
+
+jobs:
+  emit:
+    runs-on: ubuntu-latest
+    outputs:
+      workflow-run-id: ${{ steps.post.outputs.workflow_run_id }}
+    steps:
+      - name: Validate verdict
+        env:
+          VERDICT: ${{ inputs.verdict }}
+          COMPONENT_ID: ${{ inputs.component-id }}
+        run: |
+          set -euo pipefail
+          case "$VERDICT" in
+            success|partial|fail) ;;
+            *) echo "::error::verdict must be one of success|partial|fail (got '$VERDICT')"; exit 1 ;;
+          esac
+          case "$COMPONENT_ID" in
+            *:*) ;;
+            *) echo "::error::component-id must be '<kind>:<name>' (got '$COMPONENT_ID')"; exit 1 ;;
+          esac
+
+      - name: Build payload
+        id: payload
+        env:
+          COMPONENT_ID: ${{ inputs.component-id }}
+          VERDICT: ${{ inputs.verdict }}
+          SUMMARY: ${{ inputs.summary }}
+          ACTOR_INPUT: ${{ inputs.actor }}
+          ARTIFACTS_JSON: ${{ inputs.artifacts-json }}
+          DEFAULT_ACTOR: ${{ github.workflow }}
+          GH_REPO: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SERVER: ${{ github.server_url }}
+          GH_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          actor = os.environ.get("ACTOR_INPUT") or os.environ["DEFAULT_ACTOR"]
+          arts_in = (os.environ.get("ARTIFACTS_JSON") or "").strip()
+          if arts_in:
+              try:
+                  artifacts = json.loads(arts_in)
+                  if not isinstance(artifacts, dict):
+                      raise ValueError("artifacts-json must decode to a JSON object")
+              except Exception as e:
+                  raise SystemExit(f"artifacts-json invalid: {e}")
+          else:
+              artifacts = {
+                  "run_url": f"{os.environ['GH_SERVER']}/{os.environ['GH_REPO']}/actions/runs/{os.environ['GH_RUN_ID']}",
+                  "repo": os.environ["GH_REPO"],
+                  "sha": os.environ["GH_SHA"],
+              }
+          payload = {
+              "component_id": os.environ["COMPONENT_ID"],
+              "verdict": os.environ["VERDICT"],
+              "summary": os.environ["SUMMARY"],
+              "actor": actor,
+              "artifacts": artifacts,
+          }
+          with open("payload.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f)
+          # Mask sensitive-ish fields just in case (defense in depth — none here are secrets).
+          print(f"::notice::Emitting verdict {payload['verdict']} for {payload['component_id']} (actor={payload['actor']})")
+          PY
+
+      - name: POST to Truth Point feedback
+        id: post
+        env:
+          URL: ${{ secrets.TRUTH_POINT_FEEDBACK_URL }}
+          TOKEN: ${{ secrets.TRUTH_POINT_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Api-Token: $TOKEN" \
+            -H "Authorization: Bearer $TOKEN" \
+            --data @payload.json) || true
+          echo "HTTP $status"
+          if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+            echo "::error::truth-point-feedback returned $status"
+            cat response.json || true
+            exit 1
+          fi
+          run_id=$(python3 -c "import json,sys; d=json.load(open('response.json')); print((d.get('data') or {}).get('workflow_run_id',''))")
+          echo "workflow_run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "::notice::Truth Point accepted verdict — run_id=$run_id"
