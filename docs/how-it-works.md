@@ -28,7 +28,8 @@ machina-sports/.github
 │   │   ├── reusable-semantic-pr.yml       ← Conventional Commits PR title gate
 │   │   ├── reusable-secret-scan.yml       ← gitleaks (also embedded in pr-checks)
 │   │   ├── reusable-review-pr.yml         ← Truth Point platform-aware PR review
-│   │   └── reusable-deploy-aks.yml        ← kubectl set image to AKS, optional gating
+│   │   ├── reusable-deploy-aks.yml        ← kubectl set image to AKS, optional gating
+│   │   └── reusable-emit-verdict.yml      ← record success/partial/fail verdict to Truth Point
 │   └── actions/
 │       └── setup-and-build/               ← composite action used by callers' inline builds
 ├── .claude-plugin/
@@ -135,6 +136,25 @@ Generic AKS deploy primitive. Inputs:
 Steps: resolve image tag → Azure login → AKS context → `kubectl set image` + rollout status → Slack notify (best-effort, `continue-on-error: true`) → Azure cleanup.
 
 This workflow does **not** build images. Builds happen in the caller (see "Why builds stay in callers" below).
+
+### `reusable-emit-verdict.yml`
+
+Records a `{component_id, verdict, summary, actor, artifacts}` event into the **Truth Point** service so the platform's knowledge base stays aligned with what really happens to a component in real runs (deploys, smoke tests, agent runs).
+
+Inputs:
+
+- `component-id` — `<kind>:<name>` (e.g. `connector:vertex-embedding`)
+- `verdict` — `success` | `partial` | `fail` (validated)
+- `summary` — one-line human reason
+- `actor` (optional) — defaults to the caller workflow name
+- `artifacts-json` (optional) — JSON object; defaults to a stub built from `github.run_id` / `github.repository` / `github.sha`
+
+Secrets:
+
+- `TRUTH_POINT_FEEDBACK_URL` — the truth-point tenant's `/workflow/schedule/truth-point-feedback` URL
+- `TRUTH_POINT_API_TOKEN` — project token with workflow execute scope
+
+Failure semantics: the job fails on validation errors or non-2xx responses. Use `continue-on-error: true` on the caller job if verdict emission should be advisory rather than gating.
 
 ---
 
