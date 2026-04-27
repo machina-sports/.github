@@ -1,0 +1,278 @@
+name: Reusable — Truth Point PR review
+
+# Asks Truth Point to review the calling PR. The truth-point-review-pr
+# workflow pulls the relevant slice of platform truth (active lessons-
+# learned, active incidents, semantically-similar components) and emits a
+# structured review keyed to specific files/lines. This reusable wraps
+# that workflow so any repo can opt into platform-aware review with one
+# `uses:` block.
+#
+# Lifecycle:
+#   1. Fetch PR title + unified diff via gh CLI.
+#   2. POST to truth-point-review-pr workflow schedule URL.
+#   3. Poll the workflow execution endpoint until it finishes.
+#   4. Render verdict + findings as a single PR review comment.
+#   5. (Optional) emit a verdict back to Truth Point so the rubric is
+#      auditable. Callers wanting that should chain reusable-emit-verdict.
+#
+# Usage example:
+#
+#   review:
+#     if: github.event_name == 'pull_request'
+#     uses: machina-sports/.github/.github/workflows/reusable-review-pr.yml@v1
+#     with:
+#       applies-to: studio   # optional kind filter for lessons
+#     secrets:
+#       TRUTH_POINT_REVIEW_PR_URL: ${{ secrets.TRUTH_POINT_REVIEW_PR_URL }}
+#       TRUTH_POINT_API_TOKEN:     ${{ secrets.TRUTH_POINT_API_TOKEN }}
+#
+# Failure semantics:
+#   The job fails on Truth Point HTTP errors or polling timeout. If the
+#   workflow returns a structured review with `verdict: request-changes`
+#   the job still SUCCEEDS — the verdict is information for humans, not a
+#   gate. Add `continue-on-error: true` on the caller job if you don't
+#   want analyzer outages to block merge.
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: 'PR number. Defaults to github.event.pull_request.number when triggered by pull_request.'
+        required: false
+        type: number
+        default: 0
+      applies-to:
+        description: 'Optional kind filter for lessons (e.g. "agent-template", "workflow", "studio"). Empty = all lessons.'
+        required: false
+        type: string
+        default: ''
+      poll-timeout-seconds:
+        description: 'How long to wait for the analyzer workflow to finish.'
+        required: false
+        type: number
+        default: 120
+    secrets:
+      TRUTH_POINT_REVIEW_PR_URL:
+        required: true
+      TRUTH_POINT_API_TOKEN:
+        required: true
+    outputs:
+      verdict:
+        description: 'approve | approve-with-nits | request-changes | scope-mismatch'
+        value: ${{ jobs.review.outputs.verdict }}
+      findings-count:
+        description: 'Number of structured findings returned by the analyzer.'
+        value: ${{ jobs.review.outputs.findings-count }}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    outputs:
+      verdict: ${{ steps.render.outputs.verdict }}
+      findings-count: ${{ steps.render.outputs.findings_count }}
+    steps:
+      - name: Resolve PR number
+        id: pr
+        env:
+          INPUT_PR: ${{ inputs.pr-number }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          pr="${INPUT_PR}"
+          if [[ -z "$pr" || "$pr" == "0" ]]; then
+            pr="${EVENT_PR}"
+          fi
+          if [[ -z "$pr" || "$pr" == "0" ]]; then
+            echo "::error::Could not determine PR number — pass pr-number input when not running on pull_request"
+            exit 1
+          fi
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch PR title + diff
+        id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title=$(gh pr view "$PR" --repo "$REPO" --json title -q .title)
+          gh pr diff "$PR" --repo "$REPO" > pr.diff
+          # Truncate diffs over ~40KB so the workflow output cap (50KB)
+          # keeps headroom for the analyzer's structured review.
+          if [[ $(wc -c < pr.diff) -gt 40000 ]]; then
+            head -c 40000 pr.diff > pr.diff.trunc
+            printf '\n\n... (diff truncated at 40KB by reusable-review-pr) ...\n' >> pr.diff.trunc
+            mv pr.diff.trunc pr.diff
+            echo "::warning::Diff was truncated to 40KB before sending to Truth Point"
+          fi
+          # Save title for downstream steps without exposing it via outputs
+          # (titles can include backticks / quotes that break GHA expression
+          # interpolation).
+          printf '%s' "$title" > pr.title
+
+      - name: Schedule truth-point-review-pr
+        id: schedule
+        env:
+          URL: ${{ secrets.TRUTH_POINT_REVIEW_PR_URL }}
+          TOKEN: ${{ secrets.TRUTH_POINT_API_TOKEN }}
+          APPLIES_TO: ${{ inputs.applies-to }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          payload = {
+              "pr_title": open("pr.title", encoding="utf-8").read(),
+              "pr_diff": open("pr.diff", encoding="utf-8").read(),
+              "applies_to": os.environ.get("APPLIES_TO", ""),
+          }
+          with open("schedule-payload.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f)
+          PY
+          status=$(curl -sS -o schedule-response.json -w "%{http_code}" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Api-Token: $TOKEN" \
+            -H "Authorization: Bearer $TOKEN" \
+            --data @schedule-payload.json) || true
+          echo "HTTP $status"
+          if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+            echo "::error::truth-point-review-pr schedule returned $status"
+            cat schedule-response.json || true
+            exit 1
+          fi
+          run_id=$(python3 -c "import json; d=json.load(open('schedule-response.json')); print((d.get('data') or {}).get('workflow_run_id',''))")
+          if [[ -z "$run_id" ]]; then
+            echo "::error::No workflow_run_id in schedule response"
+            cat schedule-response.json
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Poll for completion
+        id: poll
+        env:
+          URL: ${{ secrets.TRUTH_POINT_REVIEW_PR_URL }}
+          TOKEN: ${{ secrets.TRUTH_POINT_API_TOKEN }}
+          RUN_ID: ${{ steps.schedule.outputs.run_id }}
+          TIMEOUT: ${{ inputs.poll-timeout-seconds }}
+        run: |
+          set -euo pipefail
+          base_url=$(python3 -c "import os, re; print(re.sub(r'/workflow/schedule/[^/]+$', '', os.environ['URL']))")
+          exec_url="$base_url/execution/workflow/$RUN_ID"
+          deadline=$(( $(date +%s) + TIMEOUT ))
+          while [[ $(date +%s) -lt $deadline ]]; do
+            sleep 2
+            curl -sS -o exec-response.json \
+              -H "X-Api-Token: $TOKEN" \
+              -H "Authorization: Bearer $TOKEN" \
+              "$exec_url" || continue
+            status=$(python3 -c "import json; d=json.load(open('exec-response.json')); print((d.get('data') or {}).get('status',''))" || echo "")
+            echo "status=$status"
+            case "$status" in
+              executed)
+                echo "Done."
+                exit 0
+                ;;
+              failed|error)
+                echo "::error::truth-point-review-pr workflow status=$status"
+                cat exec-response.json
+                exit 1
+                ;;
+            esac
+          done
+          echo "::error::Polling timed out after ${TIMEOUT}s"
+          cat exec-response.json || true
+          exit 1
+
+      - name: Render review comment
+        id: render
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess
+          d = json.load(open("exec-response.json")).get("data") or {}
+          out = ((d.get("workflow_output") or {}).get("outputs") or {})
+          verdict = out.get("verdict") or "approve"
+          summary = out.get("summary") or ""
+          findings = out.get("findings") or []
+          meta = out.get("meta_observation") or ""
+
+          icon = {
+              "approve": "✅",
+              "approve-with-nits": "🟡",
+              "request-changes": "🔴",
+              "scope-mismatch": "🟦",
+          }.get(verdict, "•")
+
+          lines = []
+          lines.append(f"### {icon} Truth Point review — `{verdict}`")
+          if summary:
+              lines.append("")
+              lines.append(f"> {summary}")
+
+          if findings:
+              lines.append("")
+              lines.append(f"**Findings ({len(findings)})**")
+              for f in findings:
+                  sev = f.get("severity", "low")
+                  sev_icon = {"high": "🔴", "medium": "🟡", "low": "🔵"}.get(sev, "•")
+                  scope = f.get("scope", "")
+                  path = f.get("file") or ""
+                  ls, le = f.get("line_start") or 0, f.get("line_end") or 0
+                  loc = path
+                  if scope == "line-range" and ls:
+                      loc = f"{path}:{ls}" + (f"-{le}" if le and le != ls else "")
+                  elif scope == "whole-pr" or not path:
+                      loc = "(whole PR)"
+                  lesson = f.get("lesson_id") or ""
+                  incident = f.get("incident_id") or ""
+                  cites = []
+                  if lesson:
+                      cites.append(f"lesson `{lesson}`")
+                  if incident:
+                      cites.append(f"incident `{incident}`")
+                  cite_str = " — " + ", ".join(cites) if cites else ""
+                  cat = f.get("category") or ""
+                  lines.append("")
+                  lines.append(f"- {sev_icon} **{loc}** _{cat}_{cite_str}")
+                  msg = (f.get("message") or "").strip()
+                  if msg:
+                      for ml in msg.split("\n"):
+                          lines.append(f"  > {ml}")
+          else:
+              lines.append("")
+              lines.append("_No actionable findings._")
+
+          if meta:
+              lines.append("")
+              lines.append(f"<sub>🛰 _Rubric note:_ {meta}</sub>")
+
+          lines.append("")
+          lines.append("<sub>Posted by `truth-point-review-pr` via `reusable-review-pr.yml@v1`.</sub>")
+
+          body = "\n".join(lines)
+          with open("review-body.md", "w", encoding="utf-8") as f:
+              f.write(body)
+          # GHA outputs
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"verdict={verdict}\n")
+              f.write(f"findings_count={len(findings)}\n")
+          PY
+
+      - name: Post review as PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR" --repo "$REPO" --body-file review-body.md

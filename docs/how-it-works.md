@@ -27,6 +27,7 @@ machina-sports/.github
 │   │   ├── reusable-pr-checks.yml         ← lint/typecheck/test/build/env-guard/secret-scan
 │   │   ├── reusable-semantic-pr.yml       ← Conventional Commits PR title gate
 │   │   ├── reusable-secret-scan.yml       ← gitleaks (also embedded in pr-checks)
+│   │   ├── reusable-review-pr.yml         ← Truth Point platform-aware PR review
 │   │   ├── reusable-deploy-aks.yml        ← kubectl set image to AKS, optional gating
 │   │   └── reusable-emit-verdict.yml      ← record success/partial/fail verdict to Truth Point
 │   └── actions/
@@ -105,6 +106,23 @@ It runs four jobs in parallel:
 ### `reusable-semantic-pr.yml`
 
 Validates the PR title against Conventional Commits via `amannn/action-semantic-pull-request`. Allowed prefixes: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `build`, `ci`, `perf`, `revert`. The subject (text after `:`) must not start with an uppercase character.
+
+### `reusable-review-pr.yml`
+
+Asks Truth Point to review the calling PR. Fetches the PR title + unified diff via `gh`, POSTs to the `truth-point-review-pr` workflow, polls the execution endpoint until done, then posts a single PR comment with a structured verdict (`approve` / `approve-with-nits` / `request-changes` / `scope-mismatch`) and findings keyed to specific files/lines. Each finding can cite the `lesson_id` or `incident_id` it was grounded in, so the rubric is auditable.
+
+Inputs:
+
+- `pr-number` — defaults to `github.event.pull_request.number` when triggered by `pull_request`.
+- `applies-to` — optional kind filter for lessons (e.g. `studio`, `agent-template`, `workflow`). Empty = all lessons.
+- `poll-timeout-seconds` — how long to wait for the analyzer (default 120s).
+
+Secrets:
+
+- `TRUTH_POINT_REVIEW_PR_URL` — the workflow schedule URL for `truth-point-review-pr`.
+- `TRUTH_POINT_API_TOKEN` — Truth Point API token.
+
+Failure semantics: the job fails on Truth Point HTTP errors / polling timeout. A `request-changes` verdict is **information**, not a gate — set `continue-on-error: true` on the caller job if you don't want analyzer outages to block merge.
 
 ### `reusable-deploy-aks.yml`
 
