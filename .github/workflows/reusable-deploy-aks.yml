@@ -46,6 +46,11 @@ on:
         required: false
         type: string
         default: '5m'
+      tag-pattern:
+        description: 'Bash extended regex IMAGE_TAG must match. Empty = no validation. Pin per-repo via the calling workflow to defend against malformed tags (e.g. a bot pushing `v.sbot-stg-.7` when the convention is `v.sbot-stg-YYYYMMDD-N`). When set, the deploy fails BEFORE Azure login if the tag does not match — no AKS update, no rollout.'
+        required: false
+        type: string
+        default: ''
     secrets:
       REGISTRY_URL:
         required: true
@@ -73,6 +78,17 @@ jobs:
           ENV_LABEL="${{ inputs.environment }}"
           [ -z "$ENV_LABEL" ] && ENV_LABEL="staging"
           echo "ENV_LABEL=$ENV_LABEL" >> "$GITHUB_ENV"
+
+      - name: Validate tag format
+        if: inputs.tag-pattern != ''
+        env:
+          TAG_PATTERN: ${{ inputs.tag-pattern }}
+        run: |
+          if ! [[ "$IMAGE_TAG" =~ $TAG_PATTERN ]]; then
+            echo "::error::IMAGE_TAG '$IMAGE_TAG' does not match required pattern '$TAG_PATTERN'. Refusing to deploy."
+            exit 1
+          fi
+          echo "IMAGE_TAG '$IMAGE_TAG' matches '$TAG_PATTERN'"
 
       - name: Login to Azure
         uses: azure/login@v2
