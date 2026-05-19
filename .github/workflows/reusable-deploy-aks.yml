@@ -69,15 +69,19 @@ jobs:
     environment: ${{ inputs.environment }}
     steps:
       - name: Resolve image tag and env label
+        id: resolve
         run: |
           if [ -n "${{ inputs.image-tag }}" ]; then
-            echo "IMAGE_TAG=${{ inputs.image-tag }}" >> "$GITHUB_ENV"
+            IMAGE_TAG="${{ inputs.image-tag }}"
           else
-            echo "IMAGE_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+            IMAGE_TAG="${GITHUB_REF#refs/tags/}"
           fi
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+          echo "image-tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
           ENV_LABEL="${{ inputs.environment }}"
           [ -z "$ENV_LABEL" ] && ENV_LABEL="staging"
           echo "ENV_LABEL=$ENV_LABEL" >> "$GITHUB_ENV"
+          echo "env-label=$ENV_LABEL" >> "$GITHUB_OUTPUT"
 
       - name: Validate tag format
         if: inputs.tag-pattern != ''
@@ -118,8 +122,8 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_USERNAME: GitHub Actions
           SLACK_COLOR: 'good'
-          SLACK_TITLE: "[${{ env.ENV_LABEL }}] ${{ inputs.app-name }} deployed"
-          SLACK_MESSAGE: "${{ inputs.app-name }}:${{ env.IMAGE_TAG }} → ${{ inputs.namespace }}"
+          SLACK_TITLE: "[${{ steps.resolve.outputs.env-label }}] ${{ inputs.app-name }} deployed"
+          SLACK_MESSAGE: "${{ inputs.app-name }}:${{ steps.resolve.outputs.image-tag }} → ${{ inputs.namespace }}"
           SLACK_ICON: ':rocket:'
 
       - name: Notify Slack — failure
@@ -130,8 +134,8 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_USERNAME: GitHub Actions
           SLACK_COLOR: 'danger'
-          SLACK_TITLE: "[${{ env.ENV_LABEL }}] ${{ inputs.app-name }} deploy FAILED"
-          SLACK_MESSAGE: "Deploy of ${{ inputs.app-name }}:${{ env.IMAGE_TAG }} to ${{ inputs.namespace }} failed."
+          SLACK_TITLE: "[${{ steps.resolve.outputs.env-label }}] ${{ inputs.app-name }} deploy FAILED"
+          SLACK_MESSAGE: "Deploy of ${{ inputs.app-name }}:${{ steps.resolve.outputs.image-tag }} to ${{ inputs.namespace }} failed."
           SLACK_ICON: ':x:'
 
       - name: Azure cleanup
