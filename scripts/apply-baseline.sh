@@ -36,12 +36,15 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "→ Fetching latest configs from machina-sports/.github main..."
   git clone --depth 1 https://github.com/machina-sports/.github.git "$TMPDIR/dot-github" >/dev/null 2>&1
   CONFIG_SRC="$TMPDIR/dot-github/configs"
+  SCRIPT_SRC="$TMPDIR/dot-github/scripts"
 else
   # Look for sibling checkout
   if [ -d "../machina-sports-org-github/configs" ]; then
     CONFIG_SRC="../machina-sports-org-github/configs"
+    SCRIPT_SRC="../machina-sports-org-github/scripts"
   elif [ -d "../.github/configs" ]; then
     CONFIG_SRC="../.github/configs"
+    SCRIPT_SRC="../.github/scripts"
   else
     echo "❌ Cannot find configs/. Pass --remote or clone machina-sports/.github as a sibling." >&2
     exit 1
@@ -126,6 +129,12 @@ apply_gitignore
 apply_or_diff "$CONFIG_SRC/lefthook.yml"           "lefthook.yml"           "lefthook.yml"
 apply_or_diff "$CONFIG_SRC/gitleaks.toml"          ".gitleaks.toml"         ".gitleaks.toml"
 apply_or_diff "$CONFIG_SRC/actionlint.yaml"        ".github/actionlint.yaml" ".github/actionlint.yaml"
+
+if [ "$RUNTIME" = "python" ]; then
+  apply_or_diff "$SCRIPT_SRC/check_async_patterns.py" \
+    ".github/scripts/check_async_patterns.py" \
+    ".github/scripts/check_async_patterns.py"
+fi
 
 if [ "$RUNTIME" = "node" ]; then
   apply_or_diff "$CONFIG_SRC/prettier.config.mjs"  "prettier.config.mjs"    "prettier.config.mjs"
