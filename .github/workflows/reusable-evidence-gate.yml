@@ -1,0 +1,77 @@
+name: Reusable — Evidence gate
+
+# Reads the evidence block in the calling PR's body and fails when a step has no
+# evidence behind it. Complements reusable-pr-checks: those prove the code builds,
+# this one asks whether anybody exercised it and left a trail someone else can
+# re-check.
+#
+# Why it exists: on 2026-09-14 three machina-studio PRs had been open since the
+# 12th with every required check green and every box in their "Test plan" section
+# unticked. Nothing in CI read that section, so nothing said so.
+#
+# Usage in a caller repo's .github/workflows/pr.yml:
+#
+#   jobs:
+#     evidence:
+#       uses: machina-sports/.github/.github/workflows/reusable-evidence-gate.yml@v1
+#
+# The status-check context is then `evidence / Evidence gate`. Use that exact
+# string when adding it to required_status_checks.
+#
+# Modes — repository variable EVIDENCE_GATE in the CALLING repo, forwarded by the
+# caller as the `mode` input (Actions does not expose `vars` to a reusable
+# workflow automatically):
+#   (unset) / warn   annotate only, never fail   <- rollout default
+#   enforce          fail the check
+#   off              skip entirely
+#
+# The block the gate reads lives in .github/PULL_REQUEST_TEMPLATE.md of this repo,
+# which every machina-sports repo without its own template inherits.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'off | warn | enforce. Pass ${{ vars.EVIDENCE_GATE }} from the caller.'
+        required: false
+        type: string
+        default: ''
+      gate-ref:
+        description: 'Ref of machina-sports/.github to take the validator from. Pin it if you want a frozen ruleset.'
+        required: false
+        type: string
+        default: 'v1'
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    name: Evidence gate
+    # Drafts are work in progress, and bots do not fill checklists.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch the validator
+        uses: actions/checkout@v4
+        with:
+          repository: machina-sports/.github
+          ref: ${{ inputs.gate-ref }}
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.18.0'
+
+      - name: Self-test the gate
+        run: node scripts/evidence-gate.mjs --selftest
+
+      - name: Check the evidence block
+        env:
+          # Passed through env, never interpolated into the shell.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          EVIDENCE_GATE: ${{ inputs.mode }}
+        run: node scripts/evidence-gate.mjs

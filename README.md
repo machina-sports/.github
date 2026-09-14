@@ -24,12 +24,40 @@ Each repo's `.github/workflows/*.yml` calls one of:
 |---|---|---|
 | `reusable-pr-checks.yml` | Lint, typecheck, test, build, secret scan | `pull_request` |
 | `reusable-semantic-pr.yml` | PR title must match `feat:`, `fix:`, etc | `pull_request` |
+| `reusable-evidence-gate.yml` | Reads the evidence block in the PR body and fails when a step has no evidence | `pull_request` |
 | `reusable-secret-scan.yml` | gitleaks scan (also embedded in pr-checks) | `pull_request` |
 | `reusable-deploy-aks.yml` | `kubectl set image` to AKS, optional gating via `environment` input | After per-app build, or as standalone redeploy |
 
 > **Why no `reusable-build-*.yml`?** GitHub Actions does not allow `secrets.*` references inside `with:` blocks of workflow_call inputs. Studio (and most apps) need secrets in their docker `build-args`. Each app handles its own build (with its own `vars` / `secrets`) inline, then calls `reusable-deploy-aks.yml` to deploy. See [docs/deploy-flow.md](docs/deploy-flow.md).
 
 See [docs/deploy-flow.md](docs/deploy-flow.md) for the canonical `dev → stg → prd` lifecycle.
+
+## The evidence gate
+
+`reusable-pr-checks.yml` proves the code builds. It cannot show that a human
+exercised the change, and it leaves nothing a second person can re-check a week
+later. `reusable-evidence-gate.yml` asks for exactly that, before merge, while the
+author still remembers.
+
+It reads five lines from the PR body — `task`, `repro`, `test`, `staging`,
+`rollback` — and fails on an unticked box, an empty value, a leftover
+`<placeholder>`, a one-word answer, a duplicated line, or a `staging:` line with
+no deployed version and URL. Four of the five can be waived with
+`n/a — <reason of at least 20 characters>`, printed in the check summary rather
+than swallowed. `task:` cannot be waived.
+
+The block lives in [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md),
+so every repo without its own template gets it for free. Wiring the check is three
+lines in the caller — see [docs/adoption-guide.md](docs/adoption-guide.md).
+
+It ships in **warn** mode: with the repository variable `EVIDENCE_GATE` unset the
+check annotates and never fails, so adopting it turns no open PR red. Two commands
+make it blocking, and both are reversible.
+
+**Why it exists.** On 2026-09-14, three `machina-studio` PRs had been open since
+the 12th with all five required checks green, a well-written "Test plan" section,
+and every box in it unticked. Nothing in CI read that section, so nothing said so.
+They were mergeable that whole time with zero runtime verification.
 
 ## Layout
 
