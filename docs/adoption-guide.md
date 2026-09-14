@@ -69,7 +69,41 @@ jobs:
       typecheck-cmd: 'npx tsc --noEmit'
       test-cmd: ''               # leave blank if no tests yet
       build-cmd: 'npm run build'
+
+  evidence:
+    uses: machina-sports/.github/.github/workflows/reusable-evidence-gate.yml@v1
+    with:
+      mode: ${{ vars.EVIDENCE_GATE }}
 ```
+
+**Put every branch this repo actually ships from in `branches:`.** The filter is
+the most common way these checks end up guarding nothing: `machina-core-api`
+listed `[master, main, staging, develop]` while every release since 2026-09-04
+went through `release-staging` / `release-production`, so five production PRs
+merged with no secret scan and no tests. `sportingbot-web` had the same shape with
+`stg/integration`. Read the repo's build and release workflows, not its default
+branch, before writing this list.
+
+### Arming the evidence gate
+
+It reports as the status-check context **`evidence / Evidence gate`**. It ships in
+warn mode; making it blocking is two commands, both reversible:
+
+```bash
+gh variable set EVIDENCE_GATE --repo machina-sports/<repo> --body enforce
+
+# Append it to whatever is already required — list first, never overwrite blind
+gh api repos/machina-sports/<repo>/branches/<branch>/protection/required_status_checks --jq '.contexts'
+gh api -X PATCH repos/machina-sports/<repo>/branches/<branch>/protection/required_status_checks \
+  -f 'contexts[]=<each existing context>' \
+  -f 'contexts[]=evidence / Evidence gate'
+```
+
+Do not make it required before the workflow is on the target branch: a required
+check that never reports leaves every PR waiting on a status that cannot arrive.
+Checking is cheap — open a throwaway PR from a commit that predates the workflow
+and confirm the check still reports, which it will, because `pull_request`
+workflows are read from the merge ref.
 
 ### `.github/workflows/build-staging.yml`
 
