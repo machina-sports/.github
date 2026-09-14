@@ -32,7 +32,7 @@ on:
   workflow_call:
     inputs:
       mode:
-        description: 'off | warn | enforce. Pass ${{ vars.EVIDENCE_GATE }} from the caller.'
+        description: 'off | warn | enforce. Callers pass their own EVIDENCE_GATE repository variable here.'
         required: false
         type: string
         default: ''
