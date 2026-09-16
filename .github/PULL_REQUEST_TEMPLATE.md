@@ -39,6 +39,21 @@ Why the `staging:` line insists on a version: staging routinely runs a different
 commit than the branch you just pushed, and we have lost verification rounds to
 exactly that. "Verified on staging" with no version is not a verifiable claim.
 
+Not merged yet, so staging does not run your commit? Cut a staging tag scoped to
+the pull request instead of the main line:
+
+```
+v.staging-pr<PR>.<N>    from the feature branch, only to produce this evidence
+v.staging-main.<N>      from `main`, after the merge — the one that goes in the receipt
+```
+
+The staging build workflows trigger on `v.staging-*.*`, where the scope is a
+wildcard, so this needs no CI change and the gate accepts any scope. Reserving the
+`main.<N>` sequence for merged commits is what stops a tag from pointing at a commit
+that no branch carries after a squash-merge. Rules, and the three courtesies that
+keep one shared staging cluster usable, in
+[machina-studio/docs/evidence-gate.md](https://github.com/machina-sports/machina-studio/blob/main/docs/evidence-gate.md#getting-a-staging-version-before-the-merge).
+
 </details>
 
 ## Checklist
