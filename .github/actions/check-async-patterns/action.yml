@@ -1,0 +1,102 @@
+name: Check Async Patterns
+description: >
+  Enforce that Celery tasks which set "processing": True always use a try-finally block.
+  Without finally, a SIGKILL/OOM leaves the flag set and the scheduler enters degraded mode.
+
+runs:
+  using: composite
+  steps:
+    - name: Write checker script
+      shell: bash
+      run: |
+        cat > /tmp/check_async_patterns.py << 'SCRIPT'
+        #!/usr/bin/env python3
+        import ast, sys
+        from pathlib import Path
+
+        def _is_task_decorator(node):
+            if isinstance(node, ast.Attribute): return node.attr == "task"
+            if isinstance(node, ast.Name):      return node.id  == "task"
+            if isinstance(node, ast.Call):      return _is_task_decorator(node.func)
+            return False
+
+        def _processing_true_locations(fn):
+            hits = []
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Dict): continue
+                for key, val in zip(node.keys, node.values):
+                    if (isinstance(key, ast.Constant) and key.value == "processing"
+                            and isinstance(val, ast.Constant) and val.value is True):
+                        hits.append((node.lineno, node.col_offset))
+            return hits
+
+        def _has_try_finally(fn):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Try) and node.finalbody:
+                    return True
+            return False
+
+        def check_file(fp):
+            errors = []
+            try:
+                src = Path(fp).read_text(encoding="utf-8")
+            except OSError as e:
+                return [f"{fp}: cannot read: {e}"]
+            try:
+                tree = ast.parse(src, filename=fp)
+            except SyntaxError as e:
+                return [f"{fp}:{e.lineno}:0: parse error: {e.msg}"]
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)): continue
+                if not any(_is_task_decorator(d) for d in node.decorator_list):   continue
+                hits = _processing_true_locations(node)
+                if not hits or _has_try_finally(node): continue
+                for ln, col in hits:
+                    errors.append(
+                        f'{fp}:{ln}:{col}: E001 [machina/async-state-missing-finally] '
+                        f'"processing": True inside Celery task `{node.name}` has no '
+                        f'try-finally. The flag will not be cleared on SIGKILL/OOM and '
+                        f'the scheduler enters degraded mode. Wrap execution in '
+                        f'try/except/finally and reset the flag in the finally block. '
+                        f'See: https://github.com/machina-sports/.github/blob/main/docs/async-patterns.md'
+                    )
+            return errors
+
+        all_errors = []
+        for p in sys.argv[1:]:
+            if p.endswith(".py"):
+                all_errors.extend(check_file(p))
+        if all_errors:
+            for e in all_errors: print(e)
+            sys.exit(1)
+        SCRIPT
+
+    - name: Resolve changed Python files
+      id: changed
+      shell: bash
+      run: |
+        base="${{ github.event.pull_request.base.sha }}"
+        head="${{ github.event.pull_request.head.sha }}"
+        if [ -z "$base" ] || [ -z "$head" ]; then
+          # Not a PR context (e.g. workflow_dispatch) — scan everything
+          FILES=$(find . -name "*.py" \
+            -not -path "./.venv/*" \
+            -not -path "./venv/*" \
+            -not -path "./.git/*" \
+            -not -path "./node_modules/*" \
+            | tr '\n' ' ')
+        else
+          FILES=$(git diff --name-only "$base" "$head" | grep '\.py$' | tr '\n' ' ' || true)
+        fi
+        echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+    - name: Run async pattern check
+      shell: bash
+      run: |
+        FILES="${{ steps.changed.outputs.files }}"
+        if [ -z "$FILES" ]; then
+          echo "No Python files changed — skipping async pattern check."
+          exit 0
+        fi
+        echo "Checking: $FILES"
+        python3 /tmp/check_async_patterns.py $FILES

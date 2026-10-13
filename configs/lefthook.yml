@@ -44,6 +44,13 @@ pre-commit:
         elif command -v flake8 >/dev/null 2>&1; then
           flake8 {staged_files}
         fi
+    python-async-patterns:
+      glob: "*.py"
+      run: |
+        SCRIPT=".github/scripts/check_async_patterns.py"
+        if [ -f "$SCRIPT" ]; then
+          python3 "$SCRIPT" {staged_files}
+        fi
 
 commit-msg:
   commands:
