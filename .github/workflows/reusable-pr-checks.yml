@@ -23,6 +23,16 @@ on:
         required: false
         type: string
         default: 'npm'
+      pdm-version:
+        description: 'Optional exact PDM bootstrap version; empty preserves the existing install.'
+        required: false
+        type: string
+        default: ''
+      pdm-cache-version:
+        description: 'Optional exact Hishel bootstrap version; does not change project runtime dependencies.'
+        required: false
+        type: string
+        default: ''
       lint-cmd:
         required: false
         type: string
@@ -139,7 +149,19 @@ jobs:
 
       - name: Install PDM
         if: inputs.package-manager == 'pdm'
-        run: pip install pdm
+        env:
+          PDM_VERSION: ${{ inputs.pdm-version }}
+          HISHEL_VERSION: ${{ inputs.pdm-cache-version }}
+        run: |
+          pdm_spec=pdm
+          if [ -n "$PDM_VERSION" ]; then
+            pdm_spec="pdm==$PDM_VERSION"
+          fi
+          packages=("$pdm_spec")
+          if [ -n "$HISHEL_VERSION" ]; then
+            packages+=("hishel[httpx2]==$HISHEL_VERSION")
+          fi
+          python -m pip install "${packages[@]}"
 
       - name: Install Poetry
         if: inputs.package-manager == 'poetry'
